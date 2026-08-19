@@ -1,0 +1,28 @@
+include:
+  - local: '/fixtures/local-snippet.yml'
+  - remote: 'https://gitlab.com/gitlab-org/gitlab/-/raw/master/lib/gitlab/ci/templates/Bash.gitlab-ci.yml'
+  - template: Auto-DevOps.gitlab-ci.yml
+  - project: my-group/my-project
+    ref: main
+    file: '/ci/shared.yml'
+  - component: gitlab.com/components/sast/sast@3.4.0
+
+stages: [build, test, deploy]
+
+.base:
+  image: alpine:3.20
+  before_script:
+    - echo "base"
+
+job:a:
+  extends: .base
+  stage: build
+  script:
+    - echo "A"
+
+job:b:
+  extends: .base
+  stage: test
+  needs: ["job:a"]
+  script:
+    - echo "B"

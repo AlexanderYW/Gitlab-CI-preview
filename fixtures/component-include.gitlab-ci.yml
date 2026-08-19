@@ -1,0 +1,11 @@
+include:
+  - component: gitlab.com/components/sast/sast@3.4.0
+    inputs:
+      stage: test
+
+stages: [build, test, deploy]
+
+build:app:
+  stage: build
+  script:
+    - echo "builds before sast component runs"

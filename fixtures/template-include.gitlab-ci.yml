@@ -1,0 +1,9 @@
+include:
+  - template: Auto-DevOps.gitlab-ci.yml
+
+stages: [build, test, deploy]
+
+override:test:
+  stage: test
+  script:
+    - echo "augments the Auto-DevOps template"

@@ -1,0 +1,9 @@
+include:
+  - local: '/cyclic-a.yml'
+
+stages: [build]
+
+root:job:
+  stage: build
+  script:
+    - echo "root"

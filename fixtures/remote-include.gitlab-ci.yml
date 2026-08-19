@@ -1,0 +1,9 @@
+include:
+  - remote: 'https://gitlab.com/gitlab-org/gitlab/-/raw/master/lib/gitlab/ci/templates/Bash.gitlab-ci.yml'
+
+stages: [build, test]
+
+local:job:
+  stage: build
+  script:
+    - echo "local job that runs alongside remote-included jobs"

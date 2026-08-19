@@ -1,0 +1,23 @@
+{
+  "name": "@gitlab-ci-preview/webview",
+  "version": "0.5.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/main.tsx --target=browser --format=esm --minify --outfile=dist/webview.js --define:process.env.NODE_ENV='\"production\"' --define:__DEV__=false && cp node_modules/@xyflow/react/dist/style.css dist/webview.css",
+    "dev": "bun build src/main.tsx --target=browser --format=esm --outfile=dist/webview.js --define:process.env.NODE_ENV='\"production\"' --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@gitlab-ci-preview/shared": "workspace:*",
+    "@xyflow/react": "^12.11.3",
+    "dagre": "^0.8.5",
+    "html-to-image": "^1.11.13",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@types/dagre": "^0.7.54"
+  }
+}

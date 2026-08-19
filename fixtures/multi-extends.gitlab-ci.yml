@@ -1,0 +1,31 @@
+stages: [build, test, deploy]
+
+.base:
+  image: alpine:3.20
+  before_script:
+    - echo "base setup"
+
+.with-cache:
+  extends: .base
+  cache:
+    key: shared
+    paths:
+      - .cache/
+
+.test-defaults:
+  extends: .with-cache
+  stage: test
+  variables:
+    NODE_ENV: test
+
+unit:tests:
+  extends: .test-defaults
+  script:
+    - echo "runs with image=alpine:3.20, base before_script, cache, and NODE_ENV"
+
+integration:tests:
+  extends:
+    - .with-cache
+    - .test-defaults
+  script:
+    - echo "multi-parent extends — later parents win"

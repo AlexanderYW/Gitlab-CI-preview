@@ -1,0 +1,11 @@
+include:
+  - project: my-group/my-project
+    ref: main
+    file: '/ci/shared.yml'
+
+stages: [build, test, deploy]
+
+consume:shared:
+  stage: build
+  script:
+    - echo "depends on a job defined in the included project file"

@@ -1,0 +1,34 @@
+stages: [build, test]
+
+.setup:
+  before_script:
+    - echo "setting up"
+    - apt-get update
+  variables:
+    NODE_ENV: test
+    LOG_LEVEL: debug
+
+.script-library:
+  install: &install
+    - npm ci
+  lint:
+    - npm run lint
+  unit:
+    - npm test -- --coverage
+
+build-job:
+  stage: build
+  before_script: !reference [.setup, before_script]
+  script:
+    - !reference [.script-library, install]
+    - npm run build
+  variables:
+    NODE_ENV: production
+
+test-job:
+  stage: test
+  variables: !reference [.setup, variables]
+  script:
+    - !reference [.script-library, install]
+    - !reference [.script-library, lint]
+    - !reference [.script-library, unit]

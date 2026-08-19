@@ -1,0 +1,9 @@
+src/**
+tsconfig.json
+**/*.map
+**/*.ts
+assets/**
+CLAUDE.md
+.vscode/**
+!dist/**
+!bundled/**

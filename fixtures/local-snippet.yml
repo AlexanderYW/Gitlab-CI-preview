@@ -1,0 +1,9 @@
+.snippet-base:
+  variables:
+    FROM_SNIPPET: "true"
+
+snippet:job:
+  extends: .snippet-base
+  stage: test
+  script:
+    - echo "from snippet"

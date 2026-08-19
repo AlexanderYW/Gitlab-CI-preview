@@ -1,0 +1,118 @@
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  APP_NAME: demo
+
+build:app:
+  stage: build
+  image: node:20
+  tags:
+    - ruby
+    - postgres
+  identity: google_cloud
+  parallel:
+    matrix:
+      - PROVIDER: aws
+        STACK:
+          - monitoring
+          - app1
+          - app2
+      - PROVIDER: [gcp, vultr]
+        STACK: [data, processing]
+  script:
+    - npm ci
+    - npm run build
+  retry:
+    max: 2
+    when: runner_system_failure
+    exit_codes: 137
+  interruptible: true
+  coverage: '/Code coverage: \d+(?:\.\d+)?/'
+  start_in: 30 minutes
+
+job1:
+  tags: [ruby, postgres]
+  hooks:
+    pre_get_sources_script:
+      - echo 'hello job1 pre_get_sources_script'
+  script: echo 'hello job1 script'
+
+trigger-child-pipeline:
+  trigger:
+    include: reference-tag.gitlab-ci.yml
+
+test:unit:
+  stage: test
+  needs: ["build:app"]
+  id_tokens:
+    ID_TOKEN_1:
+      aud: https://vault.example.com
+    ID_TOKEN_2:
+      aud:
+        - https://gcp.com
+        - https://aws.com
+    SIGSTORE_ID_TOKEN:
+      aud: sigstore
+  script:
+    - npm test
+  timeout: 3h
+  retry: 2
+
+test:lint:
+  stage: test
+  needs: ["build:app"]
+  run:
+    - name: 'hello_steps'
+      script: 'npm run lint'
+    - name: 'bye_steps'
+      step: gitlab.com/gitlab-org/ci-cd/runner-tools/echo-step@main
+      inputs:
+        echo: 'bye steps!'
+      env:
+        var1: 'value 1'
+
+dast:
+  dast_configuration:
+    site_profile: "Example Co"
+    scanner_profile: "Quick Passive Test"
+
+deploy:sit:
+  stage: deploy
+  needs: ["test:unit", "test:lint"]
+  script:
+    - ./deploy.sh
+  secrets:
+    DATABASE_PASSWORD:  # Store the path to the secret in this CI/CD variable
+      vault:  # Translates to secret: `ops/data/production/db`, field: `password`
+        engine:
+          name: kv-v2
+          path: ops
+        path: production/db
+        field: password
+  services:
+    - name: my-postgres:11.7
+      alias: db-postgres
+      entrypoint: ["/usr/local/bin/db-postgres"]
+      command: ["start"]
+
+
+deploy:prod:
+  stage: deploy
+  needs: ["test:unit", "test:lint"]
+  script:
+    - ./deploy.sh
+  secrets:
+    DATABASE_PASSWORD:  # Store the path to the secret in this CI/CD variable
+      vault:  # Translates to secret: `ops/data/production/db`, field: `password`
+        engine:
+          name: kv-v2
+          path: ops
+        path: production/db
+        field: password
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: 'Release $CI_COMMIT_TAG'
+    description: 'Release created using the CLI.'

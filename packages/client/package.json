@@ -1,0 +1,153 @@
+{
+  "name": "gitlab-ci-preview",
+  "displayName": "GitLab CI Preview",
+  "description": "Visualize .gitlab-ci.yml pipelines with full include resolution (local/remote/template/project/component)",
+  "version": "0.5.0",
+  "publisher": "AlexanderWennerstrm",
+  "license": "MIT",
+  "icon": "icon.png",
+  "engines": { "vscode": "^1.125.0" },
+  "categories": ["Programming Languages", "Visualization", "Linters"],
+  "keywords": ["gitlab", "ci", "cd", "pipeline", "yaml", "gitlab-ci", "visualization"],
+  "activationEvents": [
+    "onLanguage:yaml",
+    "workspaceContains:**/.gitlab-ci.yml"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "gitlabCi.showGraph", "title": "GitLab CI: Show Pipeline Graph", "icon": "$(graph)" },
+      { "command": "gitlabCi.showMergedPipeline", "title": "GitLab CI: Show Merged Pipeline (resolved YAML)" },
+      { "command": "gitlabCi.lintWithGitLab", "title": "GitLab CI: Validate with GitLab CI Lint API" },
+      { "command": "gitlabCi.openInGitLab", "title": "GitLab CI: Open File in GitLab" },
+      { "command": "gitlabCi.clearIncludeCache", "title": "GitLab CI: Clear Include Cache" },
+      { "command": "gitlabCi.setTokenForHost", "title": "GitLab CI: Configure Token for Host…" }
+    ],
+    "keybindings": [
+      {
+        "command": "gitlabCi.showGraph",
+        "key": "ctrl+alt+g",
+        "mac": "cmd+alt+g",
+        "when": "editorLangId == yaml && resourceFilename =~ /gitlab-ci/i"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "gitlabCi.showGraph",
+          "when": "resourceExtname =~ /\\.ya?ml$/ && resourceFilename =~ /gitlab-ci/i",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "gitlabCi.showGraph",
+          "when": "resourceExtname =~ /\\.ya?ml$/ && resourceFilename =~ /gitlab-ci/i",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "gitlabCi.showGraph",
+          "when": "resourceLangId == yaml",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "gitlabCi.showGraph",
+          "when": "resourceExtname =~ /\\.ya?ml$/ && resourceFilename =~ /gitlab-ci/i"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "gitlabCi.showMergedPipeline",
+          "when": "resourceExtname =~ /\\.ya?ml$/ && resourceFilename =~ /gitlab-ci/i"
+        },
+        {
+          "command": "gitlabCi.lintWithGitLab",
+          "when": "resourceExtname =~ /\\.ya?ml$/ && resourceFilename =~ /gitlab-ci/i"
+        },
+        {
+          "command": "gitlabCi.openInGitLab",
+          "when": "resourceExtname =~ /\\.ya?ml$/ && resourceFilename =~ /gitlab-ci/i"
+        }
+      ]
+    },
+    "walkthroughs": [
+      {
+        "id": "gitlabCiGettingStarted",
+        "title": "Get Started with GitLab CI Preview",
+        "description": "Visualize, validate, and edit your GitLab CI pipelines.",
+        "steps": [
+          {
+            "id": "openFile",
+            "title": "Open a pipeline file",
+            "description": "Open your `.gitlab-ci.yml` (or any YAML file whose name matches `gitlab-ci`). Diagnostics and the pipeline graph activate automatically.",
+            "media": { "markdown": "walkthroughs/open.md" }
+          },
+          {
+            "id": "showGraph",
+            "title": "Show the pipeline graph",
+            "description": "Run __GitLab CI: Show Pipeline Graph__ ( `Ctrl+Alt+G` / `Cmd+Alt+G` ) to see stages, jobs, and dependencies. Toggle the __Needs__ layout to view the DAG, and use __Filter jobs__ for large pipelines.\n[Show Pipeline Graph](command:gitlabCi.showGraph)",
+            "media": { "markdown": "walkthroughs/show-graph.md" },
+            "completionEvents": ["onCommand:gitlabCi.showGraph"]
+          },
+          {
+            "id": "validate",
+            "title": "Validate with GitLab",
+            "description": "Run __GitLab CI: Validate with GitLab CI Lint API__ for authoritative, server-side validation. Errors land in the Problems panel.\n[Validate Pipeline](command:gitlabCi.lintWithGitLab)",
+            "media": { "markdown": "walkthroughs/validate.md" },
+            "completionEvents": ["onCommand:gitlabCi.lintWithGitLab"]
+          },
+          {
+            "id": "token",
+            "title": "Connect a private instance",
+            "description": "To resolve private includes and use CI Lint, add a personal access token with __GitLab CI: Configure Token for Host…__\n[Configure Token](command:gitlabCi.setTokenForHost)",
+            "media": { "markdown": "walkthroughs/token.md" },
+            "completionEvents": ["onCommand:gitlabCi.setTokenForHost"]
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "GitLab CI Preview",
+      "properties": {
+        "gitlabCi.tokens": {
+          "type": "object",
+          "default": {},
+          "description": "Per-host GitLab personal access tokens, e.g. { \"gitlab.com\": \"glpat-...\" }",
+          "additionalProperties": { "type": "string" }
+        },
+        "gitlabCi.defaultHost": {
+          "type": "string",
+          "default": "gitlab.com",
+          "description": "GitLab host used for project/component API lookups."
+        },
+        "gitlabCi.cacheTtlMinutes": {
+          "type": "number",
+          "default": 15,
+          "description": "Cache TTL in minutes for branch refs (pinned SHA/tag refs cached longer)."
+        },
+        "gitlabCi.fetchTimeoutSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "Timeout in seconds for fetching remote/project/component includes before giving up."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "bun build src/extension.ts --target=node --format=cjs --outfile=dist/extension.js --external vscode",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "bun build src/extension.ts --target=node --format=cjs --outfile=dist/extension.js --watch --external vscode"
+  },
+  "dependencies": {
+    "@gitlab-ci-preview/shared": "workspace:*",
+    "vscode-languageclient": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.125.0"
+  }
+}
