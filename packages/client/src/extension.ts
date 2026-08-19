@@ -24,6 +24,7 @@ import {
   type MergePipelineResult,
 } from '@gitlab-ci-preview/shared';
 import { bundleCandidates as bundleCandidatesFor, toHost, toProjectPath, blobUrl, randomNonce } from './util.js';
+import { computeSimFiles, detectDefaultBranch, type SimFiles } from './simFiles.js';
 
 let client: LanguageClient | undefined;
 let logChannel: vscode.LogOutputChannel | undefined;
@@ -373,6 +374,8 @@ async function showGraph(ctx: vscode.ExtensionContext, uri: string) {
         await showGraph(ctx, msg.uri);
       } else if (msg.type === 'exportPng') {
         await savePng(msg.dataUrl, msg.suggestedName);
+      } else if (msg.type === 'simFiles') {
+        await handleSimFiles(msg.uri, msg.ref, msg.pipelineSource, panel.webview);
       }
     } catch (e) {
       log(`[webview→ext] handler error: ${(e as Error).stack ?? (e as Error).message}`);
@@ -624,6 +627,41 @@ function gitApi(): GitApiV1 | null {
     if (!git?.isActive) return null;
     return git.exports.getAPI(1);
   } catch { return null; }
+}
+
+/**
+ * Best-effort file lists for the rules simulation (`changes:` / `exists:`): ask the local
+ * git repo for the changed + present paths on the simulated ref. When no data can be
+ * computed (git extension missing, unknown ref, …) answer `available: false` and let the
+ * webview keep the optimistic "file conditions match" assumption.
+ */
+async function handleSimFiles(uri: string, ref: string, pipelineSource: string, webview: vscode.Webview) {
+  const reply = (files: SimFiles) => {
+    webview.postMessage({
+      type: 'simFilesResult',
+      ref,
+      pipelineSource,
+      available: files.available,
+      ...(files.changed ? { changedFiles: files.changed } : {}),
+      ...(files.exists ? { existsFiles: files.exists } : {}),
+    });
+  };
+  const fileUri = vscode.Uri.parse(uri);
+  if (fileUri.scheme !== 'file') { reply({ available: false }); return; }
+  const api = gitApi();
+  const repos = api
+    ? [...(api.repositories ?? [])].sort((a, b) => b.rootUri.fsPath.length - a.rootUri.fsPath.length)
+    : [];
+  const repo = repos.find((r) => fileUri.fsPath.startsWith(r.rootUri.fsPath)) ?? repos[0];
+  if (!repo) { reply({ available: false }); return; }
+  try {
+    const root = repo.rootUri.fsPath;
+    const defaultBranch = await detectDefaultBranch(root);
+    reply(await computeSimFiles(root, ref, pipelineSource, defaultBranch));
+  } catch (e) {
+    log(`[simFiles] computation failed (ignored): ${(e as Error).message}`);
+    reply({ available: false });
+  }
 }
 
 interface RepoContext { host: string; projectPath: string; branch: string; repoRoot: vscode.Uri }

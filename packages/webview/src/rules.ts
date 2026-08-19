@@ -3,17 +3,21 @@
  * context (branch, pipeline source, variables). This is the engine behind the
  * "which jobs would run on ref X" simulation.
  *
- * Scope (Phase 3a): evaluates `if:` expressions and `when:`. It deliberately does
- * NOT evaluate `changes:` / `exists:` (those need a file list) nor the legacy
- * `only:`/`except:` syntax — rules carrying only those conditions are treated as
- * matching so the simulation stays optimistic rather than hiding jobs we can't judge.
+ * Evaluates `if:`, `when:`, `changes:` / `exists:` (against the context's file lists —
+ * optimistically treated as matching when no file data is available) and the legacy
+ * `only:`/`except:` syntax (job-level and `workflow:`-level).
  */
 
 import type { PipelineModel } from '@gitlab-ci-preview/shared';
+import { anyGlobMatches } from './globs.js';
 
 export interface RuleContext {
   /** CI variables in scope: CI_COMMIT_BRANCH, CI_PIPELINE_SOURCE, plus pipeline/job variables. */
   variables: Record<string, string>;
+  /** Repo-relative file paths that changed on the ref (branch: vs merge-base with default; MR: the diff). */
+  changedFiles?: Set<string>;
+  /** Repo-relative file paths that exist on the ref. */
+  existsFiles?: Set<string>;
 }
 
 export type JobOutcome = 'run' | 'manual' | 'never';
@@ -196,10 +200,38 @@ function whenToOutcome(when: unknown): JobOutcome {
 
 type RawRule = { if?: unknown; when?: unknown; changes?: unknown; exists?: unknown };
 
-/** Does a rule's conditions match? Only `if:` is evaluated; `changes`/`exists` are treated as matching. */
+/** Normalize a `changes:`/`exists:` spec (string, or array with an optional `when: never` entry). */
+function parseFileSpec(spec: unknown): { globs: string[]; never: boolean } {
+  const items: unknown[] = typeof spec === 'string' ? [spec] : Array.isArray(spec) ? spec : [];
+  const globs: string[] = [];
+  let never = false;
+  for (const item of items) {
+    if (typeof item === 'string') globs.push(item);
+    else if (item && typeof item === 'object' && (item as Record<string, unknown>).when === 'never') never = true;
+  }
+  return { globs, never };
+}
+
+/** True when the spec's globs match the available file list. No file data → optimistic match. */
+function fileSpecMatches(spec: unknown, files: Set<string> | undefined): boolean {
+  const { globs, never } = parseFileSpec(spec);
+  if (files === undefined) return true;
+  if (globs.length === 0) return !never;
+  const hit = [...files].some((f) => anyGlobMatches(globs, f));
+  return never ? !hit : hit;
+}
+
+/** True when the ref has any changed files (optimistic when no data is available). */
+function anyChanged(files: Set<string> | undefined): boolean {
+  return files === undefined || files.size > 0;
+}
+
+/** Does a rule's conditions match? `if:`, `changes:` and `exists:` are AND-ed together. */
 function ruleMatches(rule: RawRule, ctx: RuleContext): boolean {
-  if (typeof rule.if === 'string') return evalIf(rule.if, ctx);
-  return true; // no `if:` (or only changes/exists) → matches
+  if (typeof rule.if === 'string' && !evalIf(rule.if, ctx)) return false;
+  if (rule.changes !== undefined && !fileSpecMatches(rule.changes, ctx.changedFiles)) return false;
+  if (rule.exists !== undefined && !fileSpecMatches(rule.exists, ctx.existsFiles)) return false;
+  return true;
 }
 
 /**
@@ -216,19 +248,91 @@ export function evaluateRules(rules: unknown[] | undefined, ctx: RuleContext): J
   return 'never'; // rules present but none matched → job is excluded
 }
 
+// ---------- legacy `only:` / `except:` ----------
+
+/** Coerce an `only:`/`except:` value (string, object, or array) into a list of entries. */
+function legacyEntries(value: unknown): Array<string | Record<string, unknown>> {
+  if (value == null) return [];
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) {
+    return value.filter(
+      (e) => typeof e === 'string' || (e && typeof e === 'object' && !Array.isArray(e)),
+    ) as Array<string | Record<string, unknown>>;
+  }
+  if (typeof value === 'object') return [value as Record<string, unknown>];
+  return [];
+}
+
+function stringList(value: unknown): string[] {
+  if (value == null) return [];
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.map(String);
+  return [];
+}
+
+/** Does one `only:`/`except:` entry match the context? */
+function legacyEntryMatches(entry: string | Record<string, unknown>, ctx: RuleContext): boolean {
+  if (typeof entry === 'string') {
+    if (entry === 'changes') return anyChanged(ctx.changedFiles);
+    if (entry === 'parent_pipeline') return ctx.variables.CI_PIPELINE_SOURCE === 'trigger';
+    // A ref name: GitLab checks it against both the branch and the tag.
+    const v = ctx.variables;
+    return v.CI_COMMIT_BRANCH === entry || v.CI_COMMIT_TAG === entry;
+  }
+  let ok = true;
+  if (entry.changes !== undefined) ok = ok && fileSpecMatches(entry.changes, ctx.changedFiles);
+  if (entry.parent_pipeline === true) ok = ok && ctx.variables.CI_PIPELINE_SOURCE === 'trigger';
+  if (ok && entry.events !== undefined) ok = stringList(entry.events).includes(ctx.variables.CI_PIPELINE_SOURCE ?? '');
+  if (ok && entry.variables !== undefined) {
+    for (const pair of stringList(entry.variables)) {
+      const eq = pair.indexOf('=');
+      if (eq <= 0 || ctx.variables[pair.slice(0, eq)] !== pair.slice(eq + 1)) { ok = false; break; }
+    }
+  }
+  return ok;
+}
+
 /**
- * Evaluate top-level `workflow:rules:`. Returns whether the pipeline would be created.
- * No workflow / no rules → pipeline runs.
+ * Legacy `only:`/`except:` semantics: at least one `only:` entry must match, and no
+ * `except:` entry may match. An absent/empty list passes that side.
+ */
+export function onlyExceptMatch(only: unknown, except: unknown, ctx: RuleContext): boolean {
+  const onlyList = legacyEntries(only);
+  const exceptList = legacyEntries(except);
+  if (onlyList.length === 0 && exceptList.length === 0) return true;
+  const onlyOk = onlyList.length === 0 || onlyList.some((e) => legacyEntryMatches(e, ctx));
+  const exceptOk = exceptList.length === 0 || !exceptList.some((e) => legacyEntryMatches(e, ctx));
+  return onlyOk && exceptOk;
+}
+
+/**
+ * Job-level conditional decision. GitLab precedence: when a job has `rules:`, the
+ * (deprecated) `only:`/`except:` are ignored entirely.
+ */
+export function evaluateJobConditions(
+  conds: { rules?: unknown[]; only?: unknown; except?: unknown },
+  ctx: RuleContext,
+): JobOutcome {
+  if (conds.rules && conds.rules.length > 0) return evaluateRules(conds.rules, ctx);
+  return onlyExceptMatch(conds.only, conds.except, ctx) ? 'run' : 'never';
+}
+
+/**
+ * Evaluate top-level `workflow:`. Returns whether the pipeline would be created.
+ * `workflow:rules:` wins; without rules, legacy `workflow:only`/`except` apply.
  */
 export function evaluateWorkflow(workflow: Record<string, unknown> | undefined, ctx: RuleContext): boolean {
-  const rules = workflow?.rules;
-  if (!Array.isArray(rules) || rules.length === 0) return true;
-  for (const raw of rules) {
-    if (!raw || typeof raw !== 'object') continue;
-    const rule = raw as RawRule;
-    if (ruleMatches(rule, ctx)) return whenToOutcome(rule.when) !== 'never';
+  if (!workflow) return true;
+  const rules = workflow.rules;
+  if (Array.isArray(rules) && rules.length > 0) {
+    for (const raw of rules) {
+      if (!raw || typeof raw !== 'object') continue;
+      const rule = raw as RawRule;
+      if (ruleMatches(rule, ctx)) return whenToOutcome(rule.when) !== 'never';
+    }
+    return false; // workflow rules present but none matched → no pipeline
   }
-  return false; // workflow rules present but none matched → no pipeline
+  return onlyExceptMatch(workflow.only, workflow.except, ctx);
 }
 
 // ---------- whole-pipeline simulation (webview entry point) ----------
@@ -239,6 +343,10 @@ export interface SimulationInput {
   ref: string;
   /** CI_PIPELINE_SOURCE (push, merge_request_event, schedule, web, …). */
   pipelineSource: string;
+  /** Repo-relative paths changed on the ref (drives `changes:` / `only: changes`). */
+  changedFiles?: string[];
+  /** Repo-relative paths that exist on the ref (drives `exists:`). */
+  existsFiles?: string[];
 }
 
 export interface SimulationResult {
@@ -285,16 +393,21 @@ function buildContext(model: PipelineModel, input: SimulationInput): RuleContext
     vars.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME = input.ref;
     vars.CI_MERGE_REQUEST_TARGET_BRANCH_NAME = defaultBranch;
   }
-  return { variables: vars };
+  const ctx: RuleContext = { variables: vars };
+  if (input.changedFiles) ctx.changedFiles = new Set(input.changedFiles);
+  if (input.existsFiles) ctx.existsFiles = new Set(input.existsFiles);
+  return ctx;
 }
 
-/** Evaluate `workflow:rules:` and every job's `rules:` for the given ref / source. */
+/** Evaluate `workflow:` and every job's `rules:`/`only:`/`except:` for the given ref / source. */
 export function simulatePipeline(model: PipelineModel, input: SimulationInput): SimulationResult {
   const ctx = buildContext(model, input);
   const pipelineRuns = evaluateWorkflow(model.workflow, ctx);
   const outcomes: Record<string, JobOutcome> = {};
   for (const job of model.jobs) {
-    outcomes[job.name] = pipelineRuns ? evaluateRules(job.rules, ctx) : 'never';
+    outcomes[job.name] = pipelineRuns
+      ? evaluateJobConditions({ rules: job.rules, only: job.raw.only, except: job.raw.except }, ctx)
+      : 'never';
   }
   return { pipelineRuns, outcomes };
 }

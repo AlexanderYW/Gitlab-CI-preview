@@ -61,4 +61,8 @@ export type WebviewMessage =
   | { type: 'selectJob'; uri: string; jobName: string }
   | { type: 'openChildPipeline'; uri: string }
   | { type: 'exportPng'; dataUrl: string; suggestedName: string }
+  /** Webview → client: fetch the changed/exists file lists for a simulated ref (drives `changes:` / `exists:`). */
+  | { type: 'simFiles'; uri: string; ref: string; pipelineSource: string }
+  /** Client → webview: file lists for the simulated ref; `available: false` means the sim stays optimistic. */
+  | { type: 'simFilesResult'; ref: string; pipelineSource: string; available: boolean; changedFiles?: string[]; existsFiles?: string[] }
   | { type: 'ready' };

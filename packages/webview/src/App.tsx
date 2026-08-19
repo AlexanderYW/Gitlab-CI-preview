@@ -81,6 +81,13 @@ export function App() {
         // Seed the simulated ref from the checked-out branch (once).
         if (!didInitRef.current && msg.current) { setSimRef(msg.current as string); }
         didInitRef.current = true;
+      } else if (msg?.type === 'simFilesResult') {
+        setSimFiles({
+          ref: msg.ref as string,
+          source: msg.pipelineSource as string,
+          ...(msg.changedFiles ? { changed: msg.changedFiles as string[] } : {}),
+          ...(msg.existsFiles ? { exists: msg.existsFiles as string[] } : {}),
+        });
       }
     };
     const onError = (e: ErrorEvent) => {
@@ -109,11 +116,43 @@ export function App() {
   const [simSource, setSimSource] = useState<string>('push');
   const [gitBranches, setGitBranches] = useState<string[]>([]);
   const didInitRef = useRef(false);
+  // File lists fetched for `changes:` / `exists:` evaluation (best-effort, per ref + source).
+  const [simFiles, setSimFiles] = useState<{ ref: string; source: string; changed?: string[]; exists?: string[] } | null>(null);
+  const simFilesKey = useRef<string | null>(null);
 
-  const sim = useMemo<SimulationResult | null>(
-    () => (model && simEnabled ? simulatePipeline(model, { ref: simRef, pipelineSource: simSource }) : null),
-    [model, simEnabled, simRef, simSource],
-  );
+  const sim = useMemo<SimulationResult | null>(() => {
+    if (!model || !simEnabled) return null;
+    const files = simFiles && simFiles.ref === simRef && simFiles.source === simSource ? simFiles : null;
+    return simulatePipeline(model, {
+      ref: simRef,
+      pipelineSource: simSource,
+      ...(files?.changed ? { changedFiles: files.changed } : {}),
+      ...(files?.exists ? { existsFiles: files.exists } : {}),
+    });
+  }, [model, simEnabled, simRef, simSource, simFiles]);
+
+  // Best-effort file lists for the simulation: ask the client for the local git file lists
+  // of the simulated ref. Results arrive as `simFilesResult`; stale ones are ignored by the
+  // memo above (they only apply when ref + source still match).
+  useEffect(() => {
+    if (!model || !simEnabled) return;
+    const key = `${model.rootUri}|${simRef}|${simSource}`;
+    if (simFilesKey.current === key) return;
+    simFilesKey.current = key;
+    setSimFiles(null);
+    vscode().postMessage({ type: 'simFiles', uri: model.rootUri, ref: simRef, pipelineSource: simSource });
+  }, [model, simEnabled, simRef, simSource]);
+
+  // Hint shown when the pipeline uses file conditions but no local file data is available.
+  const simFilesHint = useMemo(() => {
+    if (!model || !simEnabled) return null;
+    const usesFileConditions = model.jobs.some((j) => j.raw.changes !== undefined || j.raw.exists !== undefined);
+    if (!usesFileConditions) return null;
+    if (!simFiles) return null;
+    if (simFiles.ref !== simRef || simFiles.source !== simSource) return null;
+    if (!simFiles.changed && !simFiles.exists) return 'No local file data — changes:/exists: assumed to match';
+    return null;
+  }, [model, simEnabled, simFiles, simRef, simSource]);
 
   const graph = useMemo<{ nodes: Node[]; edges: Edge[] } | { error: string } | null>(
     () => {
@@ -217,6 +256,7 @@ export function App() {
         branches={gitBranches}
         wouldRun={sim ? visibleJobs.filter((j) => sim.outcomes[j.name] !== 'never').length : 0}
         total={visibleJobs.length}
+        hint={simFilesHint}
       />
       <div
         ref={flowWrapRef}
@@ -393,16 +433,19 @@ const nodeTypes = { stageHeader: StageHeaderNode };
 
 /**
  * Toolbar to simulate which jobs would run for a given ref + pipeline source by
- * evaluating `workflow:rules:` and per-job `rules:`. Note: `changes:`/`exists:` and
- * legacy `only/except` are not evaluated, so the result is a close approximation.
+ * evaluating `workflow:` and per-job `rules:` / `only:` / `except:`. `changes:` /
+ * `exists:` are evaluated against the local git file lists when available; when they
+ * are not (no data), they are treated as matching — the `hint` prop surfaces that.
  */
 function SimulationBar({
-  enabled, setEnabled, refName, setRefName, source, setSource, result, branches, wouldRun, total,
+  enabled, setEnabled, refName, setRefName, source, setSource, result, branches, wouldRun, total, hint,
 }: {
   enabled: boolean; setEnabled: (v: boolean) => void;
   refName: string; setRefName: (v: string) => void;
   source: string; setSource: (v: string) => void;
   result: SimulationResult | null; branches: string[]; wouldRun: number; total: number;
+  /** Optional amber note, e.g. when `changes:`/`exists:` fall back to optimistic matching. */
+  hint?: string | null;
 }) {
   const controlStyle: React.CSSProperties = {
     background: 'var(--vscode-input-background)',
@@ -455,6 +498,9 @@ function SimulationBar({
           {PIPELINE_SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
       </label>
+      {enabled && hint && (
+        <span style={{ color: 'var(--vscode-editorWarning-foreground, #dcb678)' }}>{hint}</span>
+      )}
       {enabled && result && (
         <span style={{ marginLeft: 'auto', opacity: 0.85 }} aria-live="polite">
           {result.pipelineRuns
