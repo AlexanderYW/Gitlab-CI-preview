@@ -347,6 +347,8 @@ export interface SimulationInput {
   changedFiles?: string[];
   /** Repo-relative paths that exist on the ref (drives `exists:`). */
   existsFiles?: string[];
+  /** Ad-hoc CI variables entered in the sim toolbar; override model globals but never the predefined CI_* values. */
+  extraVariables?: Record<string, string>;
 }
 
 export interface SimulationResult {
@@ -362,6 +364,25 @@ function refSlug(ref: string): string {
 }
 
 /**
+ * Parse ad-hoc CI variables from free text: `KEY=VALUE` pairs separated by newlines or `;`.
+ * Blank lines, `#` comment lines, and lines whose key doesn't match
+ * `[A-Za-z_][A-Za-z0-9_]*` are ignored. Duplicate keys: last wins.
+ */
+export function parseVariablePairs(input: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of input.split(/[\n;]/)) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue; // no separator, or empty key
+    const key = line.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    out[key] = line.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+/**
  * Build the CI variable scope for a simulation from the model globals + the user's input.
  * Predefined values that aren't knowable locally (protected status, MR target branch) use
  * reasonable heuristics so common `rules:` still evaluate sensibly — they're approximations.
@@ -371,8 +392,11 @@ function buildContext(model: PipelineModel, input: SimulationInput): RuleContext
   const isTag = input.pipelineSource === 'tag';
   const isMr = input.pipelineSource === 'merge_request_event';
 
+  // Precedence (last wins): model globals → ad-hoc sim variables → the predefined
+  // CI_* values below, which must always win so the simulated ref/source can't be spoofed.
   const vars: Record<string, string> = {
     ...model.globalVariables,
+    ...input.extraVariables,
     CI: 'true',
     GITLAB_CI: 'true',
     CI_PIPELINE_SOURCE: input.pipelineSource,

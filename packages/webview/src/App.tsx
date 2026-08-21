@@ -6,7 +6,7 @@ import { buildGraph, connectedNodeIds, reachableNodeIds, nearestNodeInDirection,
 import { vscode } from './vscode.js';
 import { JobDetailPanel } from './JobDetailPanel.js';
 import { PipelineHeader } from './PipelineHeader.js';
-import { simulatePipeline, PIPELINE_SOURCES, type SimulationResult } from './rules.js';
+import { simulatePipeline, PIPELINE_SOURCES, parseVariablePairs, type SimulationResult } from './rules.js';
 
 export function App() {
   const [model, setModel] = useState<PipelineModel | null>(null);
@@ -114,6 +114,7 @@ export function App() {
   const [simEnabled, setSimEnabled] = useState(false);
   const [simRef, setSimRef] = useState('main');
   const [simSource, setSimSource] = useState<string>('push');
+  const [simVars, setSimVars] = useState('');
   const [gitBranches, setGitBranches] = useState<string[]>([]);
   const didInitRef = useRef(false);
   // File lists fetched for `changes:` / `exists:` evaluation (best-effort, per ref + source).
@@ -123,13 +124,15 @@ export function App() {
   const sim = useMemo<SimulationResult | null>(() => {
     if (!model || !simEnabled) return null;
     const files = simFiles && simFiles.ref === simRef && simFiles.source === simSource ? simFiles : null;
+    const extraVariables = parseVariablePairs(simVars);
     return simulatePipeline(model, {
       ref: simRef,
       pipelineSource: simSource,
       ...(files?.changed ? { changedFiles: files.changed } : {}),
       ...(files?.exists ? { existsFiles: files.exists } : {}),
+      ...(Object.keys(extraVariables).length > 0 ? { extraVariables } : {}),
     });
-  }, [model, simEnabled, simRef, simSource, simFiles]);
+  }, [model, simEnabled, simRef, simSource, simFiles, simVars]);
 
   // Best-effort file lists for the simulation: ask the client for the local git file lists
   // of the simulated ref. Results arrive as `simFilesResult`; stale ones are ignored by the
@@ -252,6 +255,8 @@ export function App() {
         setRefName={setSimRef}
         source={simSource}
         setSource={setSimSource}
+        vars={simVars}
+        setVars={setSimVars}
         result={sim}
         branches={gitBranches}
         wouldRun={sim ? visibleJobs.filter((j) => sim.outcomes[j.name] !== 'never').length : 0}
@@ -438,11 +443,12 @@ const nodeTypes = { stageHeader: StageHeaderNode };
  * are not (no data), they are treated as matching — the `hint` prop surfaces that.
  */
 function SimulationBar({
-  enabled, setEnabled, refName, setRefName, source, setSource, result, branches, wouldRun, total, hint,
+  enabled, setEnabled, refName, setRefName, source, setSource, vars, setVars, result, branches, wouldRun, total, hint,
 }: {
   enabled: boolean; setEnabled: (v: boolean) => void;
   refName: string; setRefName: (v: string) => void;
   source: string; setSource: (v: string) => void;
+  vars: string; setVars: (v: string) => void;
   result: SimulationResult | null; branches: string[]; wouldRun: number; total: number;
   /** Optional amber note, e.g. when `changes:`/`exists:` fall back to optimistic matching. */
   hint?: string | null;
@@ -497,6 +503,18 @@ function SimulationBar({
         >
           {PIPELINE_SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
+      </label>
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, opacity: enabled ? 1 : 0.5 }}>
+        vars
+        <input
+          type="text"
+          value={vars}
+          disabled={!enabled}
+          onChange={(e) => setVars(e.target.value)}
+          placeholder="KEY=VALUE, one per line"
+          style={{ ...controlStyle, width: 200 }}
+          aria-label="Extra CI variables for the simulation"
+        />
       </label>
       {enabled && hint && (
         <span style={{ color: 'var(--vscode-editorWarning-foreground, #dcb678)' }}>{hint}</span>

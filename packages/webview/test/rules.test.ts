@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Job, PipelineModel } from '@gitlab-ci-preview/shared';
-import { evalIf, evaluateRules, evaluateWorkflow, simulatePipeline, type RuleContext } from '../src/rules.js';
+import { evalIf, evaluateRules, evaluateWorkflow, parseVariablePairs, simulatePipeline, type RuleContext } from '../src/rules.js';
 
 function ctx(variables: Record<string, string>, files?: { changed?: string[]; exists?: string[] }): RuleContext {
   return {
@@ -275,5 +275,57 @@ describe('legacy only/except', () => {
     const m = model([job('a', { rules: [{ when: 'on_success' }] })], { workflow: { except: ['dev'] } });
     expect(simulatePipeline(m, { ref: 'dev', pipelineSource: 'push' }).pipelineRuns).toBe(false);
     expect(simulatePipeline(m, { ref: 'main', pipelineSource: 'push' }).pipelineRuns).toBe(true);
+  });
+});
+
+describe('parseVariablePairs', () => {
+  test('single and multi-line KEY=VALUE pairs', () => {
+    expect(parseVariablePairs('DEPLOY=yes')).toEqual({ DEPLOY: 'yes' });
+    expect(parseVariablePairs('A=1\nB=two')).toEqual({ A: '1', B: 'two' });
+  });
+
+  test('semicolon-separated pairs', () => {
+    expect(parseVariablePairs('A=1; B=two')).toEqual({ A: '1', B: 'two' });
+  });
+
+  test('blank lines and # comments are ignored', () => {
+    expect(parseVariablePairs('# the deploy flag\n\nA=1\n   # indented note\nB=2')).toEqual({ A: '1', B: '2' });
+  });
+
+  test('malformed lines are ignored (no separator, bad keys)', () => {
+    expect(parseVariablePairs('no equals\n1BAD=x\n-KEY=x\n=x\nA=ok')).toEqual({ A: 'ok' });
+  });
+
+  test('duplicate keys: last wins', () => {
+    expect(parseVariablePairs('A=1\nA=2')).toEqual({ A: '2' });
+  });
+
+  test('whitespace around keys and values is trimmed', () => {
+    expect(parseVariablePairs('  KEY =  spaced value  \n')).toEqual({ KEY: 'spaced value' });
+  });
+
+  test('empty input → {}', () => {
+    expect(parseVariablePairs('')).toEqual({});
+  });
+});
+
+describe('simulatePipeline (extraVariables)', () => {
+  test('extra variables make an otherwise-failing rule run', () => {
+    const m = model([job('gated', { rules: [{ if: '$DEPLOY == "yes"' }] })]);
+    expect(simulatePipeline(m, { ref: 'main', pipelineSource: 'push' }).outcomes.gated).toBe('never');
+    expect(simulatePipeline(m, { ref: 'main', pipelineSource: 'push', extraVariables: { DEPLOY: 'yes' } }).outcomes.gated).toBe('run');
+  });
+
+  test('extra variables override the model globalVariables', () => {
+    const m = model([job('env', { rules: [{ if: '$ENV == "staging"' }] })], { globalVariables: { ENV: 'prod' } });
+    expect(simulatePipeline(m, { ref: 'main', pipelineSource: 'push' }).outcomes.env).toBe('never');
+    expect(simulatePipeline(m, { ref: 'main', pipelineSource: 'push', extraVariables: { ENV: 'staging' } }).outcomes.env).toBe('run');
+  });
+
+  test('extra variables cannot override predefined CI_* values', () => {
+    const m = model([job('on_dev', { rules: [{ if: '$CI_COMMIT_BRANCH == "dev"' }] })]);
+    expect(
+      simulatePipeline(m, { ref: 'dev', pipelineSource: 'push', extraVariables: { CI_COMMIT_BRANCH: 'main' } }).outcomes.on_dev,
+    ).toBe('run');
   });
 });
