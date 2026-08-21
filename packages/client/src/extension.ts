@@ -14,6 +14,7 @@ import {
   RENAME_STAGE_REQUEST,
   UPDATE_JOB_REQUEST,
   MERGE_PIPELINE_REQUEST,
+  MIGRATE_ONLY_EXCEPT_REQUEST,
   CLEAR_CACHE_REQUEST,
   NEEDS_AUTH_NOTIFICATION,
   type NeedsAuthParams,
@@ -22,6 +23,7 @@ import {
   type RenameStageResult,
   type UpdateJobResult,
   type MergePipelineResult,
+  type MigrateOnlyExceptResult,
 } from '@gitlab-ci-preview/shared';
 import { bundleCandidates as bundleCandidatesFor, toHost, toProjectPath, blobUrl, randomNonce } from './util.js';
 import { computeSimFiles, detectDefaultBranch, type SimFiles } from './simFiles.js';
@@ -221,6 +223,16 @@ async function activateInner(ctx: vscode.ExtensionContext, _status: vscode.Statu
       } catch (e) {
         log(`[lint] FAILED: ${(e as Error).stack ?? (e as Error).message}`);
         vscode.window.showErrorMessage(`GitLab CI Lint failed: ${(e as Error).message}`);
+      }
+    }),
+    vscode.commands.registerCommand('gitlabCi.migrateOnlyExcept', async (arg?: unknown) => {
+      try {
+        const uri = uriFromArg(arg);
+        if (!uri) { vscode.window.showWarningMessage('Open or select a .gitlab-ci.yml file first.'); return; }
+        await migrateOnlyExcept(uri);
+      } catch (e) {
+        log(`[migrateOnlyExcept] FAILED: ${(e as Error).stack ?? (e as Error).message}`);
+        vscode.window.showErrorMessage(`Convert only/except to rules failed: ${(e as Error).message}`);
       }
     }),
   );
@@ -450,6 +462,35 @@ async function applyStageRename(uri: string, oldName: string, newName: string) {
       `Stage "${oldName}" is also referenced ${total} time(s) in included files. Edit those manually.`,
     );
   }
+}
+
+/** Convert every legacy `only:`/`except:` job in the document to `rules:` via the server. */
+async function migrateOnlyExcept(uri: string) {
+  if (!client) return;
+  const res = (await client.sendRequest(MIGRATE_ONLY_EXCEPT_REQUEST, { uri })) as MigrateOnlyExceptResult;
+  if (!res || res.edits.length === 0) {
+    vscode.window.showInformationMessage('Nothing to convert — no jobs use legacy only/except.');
+    return;
+  }
+  const wsEdit = new vscode.WorkspaceEdit();
+  const targetUri = vscode.Uri.parse(uri);
+  for (const e of res.edits) {
+    wsEdit.replace(
+      targetUri,
+      new vscode.Range(e.range.start.line, e.range.start.character, e.range.end.line, e.range.end.character),
+      e.newText,
+    );
+  }
+  const applied = await vscode.workspace.applyEdit(wsEdit);
+  if (!applied) { vscode.window.showErrorMessage('Failed to apply only/except conversion.'); return; }
+  try {
+    const doc = await vscode.workspace.openTextDocument(targetUri);
+    await doc.save();
+  } catch (e) {
+    log(`[migrateOnlyExcept] save failed: ${(e as Error).message}`);
+    vscode.window.showWarningMessage(`Converted, but saving the file failed: ${(e as Error).message}`);
+  }
+  vscode.window.showInformationMessage(`Converted only/except to rules in ${res.jobs.length} job(s): ${res.jobs.join(', ')}.`);
 }
 
 async function revealLocation(uri: string, range: { start: { line: number; character: number }; end: { line: number; character: number } }) {

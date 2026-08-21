@@ -1,10 +1,12 @@
 import {
+  CodeActionKind,
   createConnection,
   ProposedFeatures,
   StreamMessageReader,
   StreamMessageWriter,
   TextDocuments,
   TextDocumentSyncKind,
+  type CodeAction,
   type InitializeResult,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -16,6 +18,7 @@ import {
   RENAME_STAGE_REQUEST,
   UPDATE_JOB_REQUEST,
   MERGE_PIPELINE_REQUEST,
+  MIGRATE_ONLY_EXCEPT_REQUEST,
   CLEAR_CACHE_REQUEST,
   NEEDS_AUTH_NOTIFICATION,
   type ResolvePipelineParams,
@@ -27,12 +30,15 @@ import {
   type UpdateJobResult,
   type MergePipelineParams,
   type MergePipelineResult,
+  type MigrateOnlyExceptParams,
+  type MigrateOnlyExceptResult,
 } from '@gitlab-ci-preview/shared';
 import { resolvePipeline } from './resolve.js';
 import { buildMergedPipeline } from './features/mergePipeline.js';
 import { parseYaml } from './parser.js';
 import { collectStageRenameEdits } from './features/renameStage.js';
 import { buildJobUpdateEdit } from './features/updateJob.js';
+import { collectMigrateOnlyExceptEdits, findMigratableJobAt } from './features/migrateOnlyExcept.js';
 import { setHttpSettings, clearHttpCache, onNeedsAuth } from './includes/http.js';
 import { publishDiagnostics } from './features/diagnostics.js';
 import { hover } from './features/hover.js';
@@ -72,6 +78,7 @@ connection.onInitialize((params): InitializeResult => {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       hoverProvider: true,
       definitionProvider: true,
+      codeActionProvider: true,
       codeLensProvider: { resolveProvider: false },
       completionProvider: { triggerCharacters: [':', ' ', '-'] },
       workspace: {
@@ -238,6 +245,32 @@ connection.onRequest(RENAME_STAGE_REQUEST, async (p: RenameStageParams): Promise
     }
   }
   return { edits, externalRefs };
+});
+
+connection.onRequest(MIGRATE_ONLY_EXCEPT_REQUEST, async (p: MigrateOnlyExceptParams): Promise<MigrateOnlyExceptResult> => {
+  const doc = documents.get(p.uri);
+  if (!doc) return { jobs: [], edits: [] };
+  const parsed = parseYaml(p.uri, doc.getText());
+  return collectMigrateOnlyExceptEdits(parsed.doc, doc.getText());
+});
+
+connection.onCodeAction((p): CodeAction[] | null => {
+  const doc = documents.get(p.textDocument.uri);
+  if (!doc) return null;
+  const parsed = parseYaml(doc.uri, doc.getText());
+  const found = findMigratableJobAt(parsed.doc, doc.getText(), p.range.start);
+  if (!found) return null;
+  return [
+    {
+      title: `Convert only/except to rules: ${found.name}`,
+      kind: CodeActionKind.RefactorRewrite,
+      edit: {
+        changes: {
+          [doc.uri]: [{ range: found.edit.range, newText: found.edit.newText }],
+        },
+      },
+    },
+  ];
 });
 
 documents.listen(connection);

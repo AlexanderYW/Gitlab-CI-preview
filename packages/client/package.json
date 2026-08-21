@@ -21,7 +21,8 @@
       { "command": "gitlabCi.lintWithGitLab", "title": "GitLab CI: Validate with GitLab CI Lint API" },
       { "command": "gitlabCi.openInGitLab", "title": "GitLab CI: Open File in GitLab" },
       { "command": "gitlabCi.clearIncludeCache", "title": "GitLab CI: Clear Include Cache" },
-      { "command": "gitlabCi.setTokenForHost", "title": "GitLab CI: Configure Token for Host…" }
+      { "command": "gitlabCi.setTokenForHost", "title": "GitLab CI: Configure Token for Host…" },
+      { "command": "gitlabCi.migrateOnlyExcept", "title": "Convert only/except to rules (GitLab CI)" }
     ],
     "keybindings": [
       {

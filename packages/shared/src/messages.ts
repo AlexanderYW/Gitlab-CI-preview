@@ -50,6 +50,15 @@ export interface RenameStageResult {
   externalRefs: { uri: string; count: number }[];
 }
 
+/** Custom LSP request: client → server, convert a document's legacy `only:`/`except:` to `rules:`. */
+export const MIGRATE_ONLY_EXCEPT_REQUEST = 'gitlabCi/migrateOnlyExcept';
+export interface MigrateOnlyExceptParams { uri: string }
+export interface MigrateOnlyExceptResult {
+  /** Top-level jobs whose only/except was converted to rules. */
+  jobs: string[];
+  edits: RenameStageEdit[];
+}
+
 /** Webview ↔ client messages */
 export type WebviewMessage =
   | { type: 'modelUpdated'; model: PipelineModel }
