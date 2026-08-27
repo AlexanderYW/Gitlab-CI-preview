@@ -14,6 +14,10 @@ export const CLEAR_CACHE_REQUEST = 'gitlabCi/clearCache';
 export const NEEDS_AUTH_NOTIFICATION = 'gitlabCi/needsAuth';
 export interface NeedsAuthParams { host: string }
 
+/** Custom LSP notification: client → server, push the full host→token map (client owns secrets). */
+export const SET_TOKENS_NOTIFICATION = 'gitlabCi/setTokens';
+export interface SetTokensParams { tokens: Record<string, string> }
+
 /** Custom LSP notification: server → client, pushed when model changes. */
 export const PIPELINE_UPDATED_NOTIFICATION = 'gitlabCi/pipelineUpdated';
 export interface PipelineUpdatedParams {

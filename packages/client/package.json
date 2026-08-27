@@ -114,12 +114,6 @@
     "configuration": {
       "title": "GitLab CI Preview",
       "properties": {
-        "gitlabCi.tokens": {
-          "type": "object",
-          "default": {},
-          "description": "Per-host GitLab personal access tokens, e.g. { \"gitlab.com\": \"glpat-...\" }",
-          "additionalProperties": { "type": "string" }
-        },
         "gitlabCi.defaultHost": {
           "type": "string",
           "default": "gitlab.com",

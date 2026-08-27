@@ -4,7 +4,8 @@ import { buildBaseModel, parseYaml } from './parser.js';
 import { resolveInclude, isFailure, type ResolveContext } from './includes/index.js';
 import { schemaDiagnostics } from './features/schemaValidate.js';
 import { applyInputs, extractInputDeclarations } from './includes/inputs.js';
-import { validateJobGraph } from './features/validate.js';
+import { validateJobGraph, validateExtendsTemplates, findDuplicateJobs } from './features/validate.js';
+import { findUndefinedVariables } from './features/undefinedVars.js';
 
 export interface ResolveOptions extends ResolveContext {
   maxDepth?: number;
@@ -53,6 +54,8 @@ export async function resolvePipeline(rootUri: string, rootText: string, opts: R
       // do not overwrite previously-set jobs.)
       if (!jobsByName.has(job.name)) jobsByName.set(job.name, job);
     }
+    // Two jobs with the same name in one document is an error (cross-file overrides are merge semantics).
+    allDiagnostics.push(...findDuplicateJobs(model.jobs));
     for (const inc of model.includes) {
       allIncludes.push(inc);
       if (depth >= maxDepth) {
@@ -122,9 +125,11 @@ export async function resolvePipeline(rootUri: string, rootText: string, opts: R
   // Apply top-level `default:` (lowest precedence — only fills keys a job doesn't set).
   applyDefaults(jobsByName, defaults);
 
-  // Pipeline-graph validations: undeclared stage, needs-later-stage, needs cycles, unknown needs.
+  // Pipeline-graph validations: undeclared stage, needs-later-stage, needs cycles, unknown needs,
+  // plus `extends:` targets that aren't pipeline jobs/templates or GitLab built-in templates.
   const effectiveStages = stages.length > 0 ? stages : [...DEFAULT_STAGES];
   allDiagnostics.push(...validateJobGraph(jobsByName, effectiveStages));
+  allDiagnostics.push(...validateExtendsTemplates(jobsByName));
 
   // Resolve child-pipeline trigger includes (local files) so the webview can open them.
   for (const job of jobsByName.values()) {
@@ -139,7 +144,7 @@ export async function resolvePipeline(rootUri: string, rootText: string, opts: R
     if (!isFailure(res)) job.triggerIncludeUri = res.uri;
   }
 
-  return {
+  const result: PipelineModel = {
     rootUri,
     stages: stages.length > 0 ? stages : ['build', 'test', 'deploy'],
     jobs: [...jobsByName.values()],
@@ -150,6 +155,15 @@ export async function resolvePipeline(rootUri: string, rootText: string, opts: R
     defaults,
     workflow,
   };
+
+  // Undefined `$VAR` references across the root document and every resolved include.
+  // Pushed after construction — `diagnostics` is the same array by reference.
+  allDiagnostics.push(...findUndefinedVariables(result, [
+    { uri: rootUri, text: rootText },
+    ...Object.entries(includedSources).map(([uri, text]) => ({ uri, text })),
+  ]));
+
+  return result;
 }
 
 /** Extract the first local include path from a child-pipeline `trigger:` value, if any. */
@@ -215,13 +229,8 @@ function applyExtends(jobs: Map<string, Job>, diags: Diagnostic[], rootUri: stri
     seen.add(name);
     let acc: Record<string, unknown> = {};
     for (const parent of job.extends) {
-      if (!jobs.has(parent)) {
-        diags.push({
-          uri: job.source.uri, range: job.source.range, severity: 'warning',
-          message: `extends references unknown job "${parent}"`, source: 'gitlab-ci',
-        });
-        continue;
-      }
+      // Unknown targets are reported by validateExtendsTemplates (built-in templates allowed).
+      if (!jobs.has(parent)) continue;
       acc = { ...acc, ...merged(parent, new Set(seen)) };
     }
     const final = { ...acc, ...job.raw };

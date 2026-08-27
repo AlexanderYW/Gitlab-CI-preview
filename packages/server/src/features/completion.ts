@@ -1,6 +1,8 @@
 import { CompletionItemKind, InsertTextFormat, type CompletionItem, type Position } from 'vscode-languageserver';
 import type { PipelineModel } from '@gitlab-ci-preview/shared';
+import { parseReference, resolveReference } from '@gitlab-ci-preview/shared';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import { findReferenceAt } from './hover.js';
 import schema from '../schema/gitlab-ci.schema.json' assert { type: 'json' };
 
 // Pull key lists from the schema so we stay in sync with GitLab.
@@ -56,6 +58,12 @@ export function completion(model: PipelineModel, doc: TextDocument, pos: Positio
   const lineStart = doc.offsetAt({ line: pos.line, character: 0 });
   const linePrefix = text.slice(lineStart, doc.offsetAt(pos));
 
+  // Inside `!reference[...]`: complete job names, then the job's spec keys.
+  const ref = findReferenceAt(text, pos);
+  if (ref) {
+    return referenceCompletion(model, text.slice(ref.contentStart, doc.offsetAt(pos)));
+  }
+
   // Top-level (no indent): suggest top keys + snippets.
   if (/^[A-Za-z_.]*$/.test(linePrefix)) {
     return [
@@ -89,4 +97,27 @@ export function completion(model: PipelineModel, doc: TextDocument, pos: Positio
     }));
   }
   return [];
+}
+
+/**
+ * Completion inside a `!reference[...]` payload.
+ * Before the first separator → job names; after it → the referenced job's
+ * top-level spec keys.
+ */
+function referenceCompletion(model: PipelineModel, rawBefore: string): CompletionItem[] {
+  const trimmed = rawBefore.trim();
+  // A trailing separator means the job name is done — move on to its keys.
+  const endsWithSeparator = /[.,]\s*$/.test(trimmed);
+  const cleaned = trimmed.replace(/[.,\s]+$/, '');
+  const parsed = parseReference(cleaned);
+  if (!endsWithSeparator && (!parsed || parsed.keyPath.length === 0)) {
+    // Still typing the job name.
+    return model.jobs
+      .filter((j) => j.hidden || /[A-Za-z]/.test(j.name))
+      .map((j) => ({ label: j.name, kind: CompletionItemKind.Reference }));
+  }
+  if (!parsed) return [];
+  const res = resolveReference(cleaned, model.jobs);
+  if (!res) return [];
+  return Object.keys(res.job.raw).map((k) => ({ label: k, kind: CompletionItemKind.Property }));
 }

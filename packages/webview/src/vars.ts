@@ -1,5 +1,5 @@
 import type { Job, PipelineModel } from '@gitlab-ci-preview/shared';
-import { isPredefinedCiVar } from './ciVariables.js';
+import { isPredefinedCiVar } from '@gitlab-ci-preview/shared';
 
 /** Where an effective variable's value came from, in increasing precedence. */
 export type VarSource = 'global' | 'default' | 'job' | 'matrix';

@@ -17,6 +17,7 @@ import {
   MIGRATE_ONLY_EXCEPT_REQUEST,
   CLEAR_CACHE_REQUEST,
   NEEDS_AUTH_NOTIFICATION,
+  SET_TOKENS_NOTIFICATION,
   type NeedsAuthParams,
   type PipelineUpdatedParams,
   type PipelineModel,
@@ -27,8 +28,10 @@ import {
 } from '@gitlab-ci-preview/shared';
 import { bundleCandidates as bundleCandidatesFor, toHost, toProjectPath, blobUrl, randomNonce } from './util.js';
 import { computeSimFiles, detectDefaultBranch, type SimFiles } from './simFiles.js';
+import { TokenStore, planMigration } from './tokenStore.js';
 
 let client: LanguageClient | undefined;
+let tokenStore: TokenStore | undefined;
 let logChannel: vscode.LogOutputChannel | undefined;
 let lintDiagnostics: vscode.DiagnosticCollection | undefined;
 const panels = new Map<string, vscode.WebviewPanel>();
@@ -112,6 +115,21 @@ async function activateInner(ctx: vscode.ExtensionContext, _status: vscode.Statu
   log('[activate] calling client.start()');
   await client.start();
   log('[activate] client started');
+
+  // Client owns the secrets (the server process can't reach SecretStorage) and pushes
+  // them to the server over SET_TOKENS_NOTIFICATION.
+  tokenStore = new TokenStore(ctx.secrets);
+  await migrateTokensToSecretStorage();
+  const pushTokens = async () => {
+    try {
+      const tokens = await tokenStore!.getAll();
+      await client?.sendNotification(SET_TOKENS_NOTIFICATION, { tokens });
+    } catch (e) {
+      log(`[tokens] push to server failed (ignored): ${(e as Error).message}`);
+    }
+  };
+  await pushTokens();
+  tokenStore.onDidChange(() => { void pushTokens(); });
 
   client.onNotification(PIPELINE_UPDATED_NOTIFICATION, (params: PipelineUpdatedParams) => {
     const panel = panels.get(params.uri);
@@ -238,6 +256,24 @@ async function activateInner(ctx: vscode.ExtensionContext, _status: vscode.Statu
   );
 }
 
+/**
+ * One-time move of legacy plain-text `gitlabCi.tokens` settings into SecretStorage,
+ * then clear the setting so secrets never sit in settings.json / sync.
+ */
+async function migrateTokensToSecretStorage() {
+  try {
+    const cfg = vscode.workspace.getConfiguration('gitlabCi');
+    const oldTokens = cfg.get<Record<string, string>>('tokens') ?? {};
+    const plan = planMigration(oldTokens);
+    if (!plan) return;
+    for (const [host, token] of plan.entries) await tokenStore!.setToken(host, token);
+    await cfg.update('tokens', undefined, vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage('GitLab CI Preview: moved your access tokens from settings to secure storage.');
+  } catch (e) {
+    log(`[tokens] settings→secure-storage migration failed (ignored): ${(e as Error).stack ?? (e as Error).message}`);
+  }
+}
+
 /** Save a data:image/png;base64 URL to a user-chosen file. */
 async function savePng(dataUrl: string, suggestedName: string) {
   const comma = dataUrl.indexOf(',');
@@ -265,6 +301,24 @@ function uriFromArg(arg: unknown): string | undefined {
 
 interface CiLintResponse { valid: boolean; errors?: string[]; warnings?: string[] }
 
+/** Plain LSP-style range (mirrors shared `Range`) so the helper stays testable without vscode. */
+export interface LspRange {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
+}
+
+/**
+ * Find the job a CI Lint message refers to by scanning it for known job names
+ * (case-sensitive substring). Returns the first matching job's range, or null
+ * when no job is mentioned — the caller then anchors at top-of-file.
+ */
+export function anchorLintMessage(message: string, jobRanges: Map<string, LspRange>): LspRange | null {
+  for (const [name, range] of jobRanges) {
+    if (name && message.includes(name)) return range;
+  }
+  return null;
+}
+
 /** Validate the file against the project's GitLab CI Lint API (authoritative, server-side). */
 async function lintWithGitLab(fileUri: vscode.Uri) {
   const ctx = repoContextFor(fileUri);
@@ -272,8 +326,7 @@ async function lintWithGitLab(fileUri: vscode.Uri) {
     vscode.window.showWarningMessage('GitLab CI Lint needs a GitLab git remote to identify the project.');
     return;
   }
-  const tokens = vscode.workspace.getConfiguration('gitlabCi').get<Record<string, string>>('tokens') ?? {};
-  const token = tokens[ctx.host];
+  const token = await tokenStore?.getToken(ctx.host);
   if (!token) {
     const pick = await vscode.window.showWarningMessage(
       `A token for ${ctx.host} is required to use the GitLab CI Lint API.`, 'Add Token',
@@ -282,16 +335,50 @@ async function lintWithGitLab(fileUri: vscode.Uri) {
     return;
   }
   const doc = await vscode.workspace.openTextDocument(fileUri);
+  const uri = fileUri.toString();
+
+  // Prefer linting the fully-resolved pipeline (includes/default/extends merged); fall back to raw text.
+  let content = doc.getText();
+  try {
+    const merged = await client!.sendRequest(MERGE_PIPELINE_REQUEST, { uri }) as MergePipelineResult;
+    if (merged?.text) {
+      content = merged.text;
+      log('[lint] linting merged pipeline');
+    } else {
+      log('[lint] mergePipeline returned no text — linting raw document text');
+    }
+  } catch (e) {
+    log(`[lint] mergePipeline failed — linting raw document text: ${(e as Error).message}`);
+  }
+
+  // Best-effort: map each local job to its source range so lint messages mentioning a
+  // job name can be anchored at its definition instead of the top of the file.
+  const jobRanges = new Map<string, LspRange>();
+  try {
+    const model = await client!.sendRequest(RESOLVE_PIPELINE_REQUEST, { uri }) as PipelineModel | null;
+    for (const job of model?.jobs ?? []) {
+      if (job.source?.uri === uri) jobRanges.set(job.name, job.source.range);
+    }
+  } catch (e) {
+    log(`[lint] resolvePipeline failed — diagnostics will anchor at top-of-file: ${(e as Error).message}`);
+  }
+
   const url = `https://${ctx.host}/api/v4/projects/${encodeURIComponent(ctx.projectPath)}/ci/lint`;
+  const timeoutS = vscode.workspace.getConfiguration('gitlabCi').get<number>('fetchTimeoutSeconds') ?? 10;
   let res: Response;
   try {
     res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'PRIVATE-TOKEN': token },
-      body: JSON.stringify({ content: doc.getText(), dry_run: false }),
+      body: JSON.stringify({ content, dry_run: false }),
+      signal: AbortSignal.timeout(timeoutS * 1000),
     });
   } catch (e) {
-    vscode.window.showErrorMessage(`CI Lint request to ${ctx.host} failed: ${(e as Error).message}`);
+    const err = e as Error;
+    const reason = err.name === 'AbortError' || err.name === 'TimeoutError'
+      ? `timed out after ${timeoutS}s`
+      : err.message;
+    vscode.window.showErrorMessage(`CI Lint request to ${ctx.host} failed: ${reason}`);
     return;
   }
   if (!res.ok) {
@@ -308,10 +395,15 @@ async function lintWithGitLab(fileUri: vscode.Uri) {
   const errors = data.errors ?? [];
   const warnings = data.warnings ?? [];
 
-  // The CI Lint API returns messages without line numbers — anchor them at the top of the file.
+  // Anchor messages at the mentioned job's range when we can, otherwise at the top of the file.
   const topOfFile = new vscode.Range(0, 0, 0, Number.MAX_SAFE_INTEGER);
   const toDiag = (message: string, severity: vscode.DiagnosticSeverity) => {
-    const d = new vscode.Diagnostic(topOfFile, message, severity);
+    const anchored = anchorLintMessage(message, jobRanges);
+    const d = new vscode.Diagnostic(
+      anchored ? new vscode.Range(anchored.start.line, anchored.start.character, anchored.end.line, anchored.end.character) : topOfFile,
+      message,
+      severity,
+    );
     d.source = 'gitlab-ci-lint';
     return d;
   };
@@ -758,7 +850,7 @@ async function promptForToken(host: string) {
   const SIGN_IN = 'Sign in via GitLab Workflow';
   const buttons: string[] = ['Paste Token'];
   if (hasGitlabWorkflow) buttons.push(SIGN_IN);
-  buttons.push('Open Settings', 'Skip');
+  buttons.push('Skip');
 
   const choice = await vscode.window.showInformationMessage(
     `GitLab CI Preview can't fetch private includes on ${host} without a personal access token.`,
@@ -777,18 +869,14 @@ async function promptForToken(host: string) {
 
   if (choice === 'Paste Token') {
     await pasteTokenFlow(host, `Personal access token for ${host} (scopes: read_api, read_repository)`);
-  } else if (choice === 'Open Settings') {
-    vscode.commands.executeCommand('workbench.action.openSettings', 'gitlabCi.tokens');
   }
 }
 
 async function pasteTokenFlow(host: string, prompt: string) {
   const token = await vscode.window.showInputBox({ prompt, password: true, ignoreFocusOut: true });
   if (!token) return;
-  const cfg = vscode.workspace.getConfiguration('gitlabCi');
-  const tokens = { ...(cfg.get<Record<string, string>>('tokens') ?? {}), [host]: token };
-  await cfg.update('tokens', tokens, vscode.ConfigurationTarget.Global);
-  vscode.window.showInformationMessage(`Token saved for ${host}.`);
+  await tokenStore?.setToken(host, token);
+  vscode.window.showInformationMessage(`Token saved to secure storage for ${host}.`);
   await client?.sendRequest(CLEAR_CACHE_REQUEST).then(undefined, (e: unknown) => {
     log(`[pasteTokenFlow] cache clear after token save failed (ignored): ${(e as Error).message}`);
   });

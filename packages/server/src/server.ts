@@ -21,6 +21,7 @@ import {
   MIGRATE_ONLY_EXCEPT_REQUEST,
   CLEAR_CACHE_REQUEST,
   NEEDS_AUTH_NOTIFICATION,
+  SET_TOKENS_NOTIFICATION,
   type ResolvePipelineParams,
   type ReadIncludedFileParams,
   type ReadIncludedFileResult,
@@ -32,6 +33,7 @@ import {
   type MergePipelineResult,
   type MigrateOnlyExceptParams,
   type MigrateOnlyExceptResult,
+  type SetTokensParams,
 } from '@gitlab-ci-preview/shared';
 import { resolvePipeline } from './resolve.js';
 import { buildMergedPipeline } from './features/mergePipeline.js';
@@ -65,7 +67,6 @@ const debouncers = new Map<string, NodeJS.Timeout>();
 const includedTexts = new Map<string, string>();
 
 interface Settings {
-  tokens?: Record<string, string>;
   defaultHost?: string;
   cacheTtlMinutes?: number;
   fetchTimeoutSeconds?: number;
@@ -95,7 +96,12 @@ connection.onInitialized(() => {
   connection.workspace.getConfiguration('gitlabCi').then((cfg: Settings | null) => {
     if (cfg) applySettings(cfg);
   }).catch((e: unknown) => {
-    connection.console.error(`failed to load gitlabCi configuration (tokens/cache TTL fall back to defaults): ${(e as Error).message}`);
+    connection.console.error(`failed to load gitlabCi configuration (cache TTL falls back to defaults): ${(e as Error).message}`);
+  });
+  // Tokens never come from settings — the client owns them (SecretStorage) and pushes
+  // the full map here; setHttpSettings replaces the map wholesale.
+  connection.onNotification(SET_TOKENS_NOTIFICATION, (p: SetTokensParams) => {
+    setHttpSettings({ tokens: p.tokens ?? {} });
   });
   connection.workspace.onDidChangeWorkspaceFolders((evt) => {
     for (const a of evt.added) workspaceFolders.push(a.uri);
@@ -109,8 +115,8 @@ connection.onDidChangeConfiguration((change) => {
 });
 
 function applySettings(cfg: Settings) {
+  // No `tokens` here — they arrive via SET_TOKENS_NOTIFICATION from the client.
   setHttpSettings({
-    tokens: cfg.tokens ?? {},
     defaultHost: cfg.defaultHost ?? 'gitlab.com',
     cacheTtlMs: (cfg.cacheTtlMinutes ?? 15) * 60 * 1000,
     fetchTimeoutMs: Math.max(1, cfg.fetchTimeoutSeconds ?? 10) * 1000,
@@ -152,7 +158,7 @@ async function runResolve(doc: TextDocument) {
 connection.onHover((p) => {
   const model = modelCache.get(p.textDocument.uri);
   if (!model) return null;
-  return hover(model, p.textDocument.uri, p.position);
+  return hover(model, p.textDocument.uri, p.position, documents.get(p.textDocument.uri)?.getText());
 });
 
 connection.onDefinition((p) => {
