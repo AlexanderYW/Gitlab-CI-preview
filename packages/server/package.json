@@ -11,7 +11,7 @@
     "@gitlab-ci-preview/shared": "workspace:*",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "vscode-languageserver": "^10.1.0",
+    "vscode-languageserver": "^11.0.0",
     "vscode-languageserver-textdocument": "^1.0.12",
     "vscode-uri": "^3.1.0",
     "yaml": "^2.9.0"
