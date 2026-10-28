@@ -4,7 +4,7 @@ import { isPredefinedCiVar, REFERENCE_MARKER } from '@gitlab-ci-preview/shared';
 import { parseYaml } from '../parser.js';
 
 /** `$VAR` / `${VAR}` reference (the brace is optional and not required to close). */
-const VAR_PATTERN = /\$[{]?([A-Za-z_][A-Za-z0-9_]*)/g;
+const VAR_PATTERN = /\${?([A-Za-z_][A-Za-z0-9_]*)(?:})?/g;
 
 export interface SourceDocument {
   uri: string;
@@ -52,7 +52,7 @@ function scanDocument(doc: SourceDocument, model: PipelineModel, globalNames: Se
         const name = m[1];
         if (defined.has(name) || isPredefinedCiVar(name) || seen.has(name)) continue;
         seen.add(name);
-        diags.push(varDiagnostic(doc, scalar.offset + (m.index ?? 0), name));
+        diags.push(varDiagnostic(doc, scalar.offset + (m.index ?? 0), m[0].length, name));
       }
     }
   }
@@ -68,7 +68,7 @@ function scanDocument(doc: SourceDocument, model: PipelineModel, globalNames: Se
           const name = m[1];
           if (globalNames.has(name) || isPredefinedCiVar(name)) continue;
           // Root scope has no dedup — report every occurrence.
-          diags.push(varDiagnostic(doc, scalar.offset + (m.index ?? 0), name));
+          diags.push(varDiagnostic(doc, scalar.offset + (m.index ?? 0), m[0].length, name));
         }
       }
     }
