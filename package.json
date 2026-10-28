@@ -1,7 +1,7 @@
 {
   "name": "gitlab-ci-preview",
   "private": true,
-  "version": "0.5.0",
+  "version": "1.0.0",
   "workspaces": ["packages/*"],
   "scripts": {
     "build": "bun run --filter '*' build",

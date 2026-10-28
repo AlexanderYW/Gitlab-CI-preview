@@ -2,7 +2,7 @@
   "name": "gitlab-ci-preview",
   "displayName": "GitLab CI Preview",
   "description": "Visualize .gitlab-ci.yml pipelines with full include resolution (local/remote/template/project/component)",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "publisher": "AlexanderWennerstrm",
   "license": "MIT",
   "icon": "icon.png",
